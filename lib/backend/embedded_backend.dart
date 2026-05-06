@@ -124,6 +124,7 @@ class BackendState {
     required this.deployments,
     required this.activeSession,
     required this.logs,
+    required this.hostMappings,
   });
 
   final String userName;
@@ -131,6 +132,7 @@ class BackendState {
   final List<BackendDeployment> deployments;
   final BackendSession? activeSession;
   final List<BackendLogEvent> logs;
+  final Map<String, String> hostMappings;
 
   BackendState copyWith({
     String? userName,
@@ -138,6 +140,7 @@ class BackendState {
     List<BackendDeployment>? deployments,
     BackendSession? activeSession,
     List<BackendLogEvent>? logs,
+    Map<String, String>? hostMappings,
   }) {
     return BackendState(
       userName: userName ?? this.userName,
@@ -145,6 +148,7 @@ class BackendState {
       deployments: deployments ?? this.deployments,
       activeSession: activeSession,
       logs: logs ?? this.logs,
+      hostMappings: hostMappings ?? this.hostMappings,
     );
   }
 }
@@ -157,6 +161,7 @@ class EmbeddedBackendService {
         deployments: [],
         activeSession: null,
         logs: [],
+        hostMappings: {},
       );
 
   final _uuid = const Uuid();
@@ -179,18 +184,68 @@ class EmbeddedBackendService {
   Future<BackendProject> createProject({
     required String name,
     required String sourceType,
+    String? customUrl,
   }) async {
     final slug = name.toLowerCase().replaceAll(' ', '-');
     final p = BackendProject(
       id: _uuid.v4(),
       name: name,
       repoProvider: sourceType,
-      url: 'https://$slug.buildify.app',
+      url: customUrl ?? 'https://$slug.buildify.app',
       lastDeployedAt: null,
       isLive: false,
     );
-    _emit(_state.copyWith(projects: [..._state.projects, p]));
+    final host = Uri.tryParse(p.url)?.host;
+    final hostMappings = Map<String, String>.from(_state.hostMappings);
+    if (host != null && host.isNotEmpty) {
+      hostMappings[host] = p.id;
+    }
+    _emit(
+      _state.copyWith(
+        projects: [..._state.projects, p],
+        hostMappings: hostMappings,
+      ),
+    );
     return p;
+  }
+
+  String generateRandomSubdomain() {
+    const adjectives = [
+      'amazing',
+      'golden',
+      'swift',
+      'brave',
+      'silent',
+      'lucky',
+      'frozen',
+      'bright',
+      'rapid',
+      'solar',
+    ];
+    const nouns = [
+      'sunflower',
+      'bridge',
+      'harbor',
+      'engine',
+      'orbit',
+      'river',
+      'forest',
+      'rocket',
+      'signal',
+      'anchor',
+    ];
+    final name =
+        '${adjectives[_rand.nextInt(adjectives.length)]}-${nouns[_rand.nextInt(nouns.length)]}-${10 + _rand.nextInt(90)}';
+    return name;
+  }
+
+  BackendProject? resolveHostname(String hostname) {
+    final projectId = _state.hostMappings[hostname];
+    if (projectId == null) return null;
+    for (final project in _state.projects) {
+      if (project.id == projectId) return project;
+    }
+    return null;
   }
 
   Future<BackendDeployment> createDeployment({
@@ -216,16 +271,20 @@ class EmbeddedBackendService {
     return d;
   }
 
-  Future<BackendSession> startSession({required String projectId}) async {
+  Future<BackendSession> startSession({
+    required String projectId,
+    String? publicUrl,
+    String tunnelProvider = 'cloudflare',
+  }) async {
     _ticker?.cancel();
-    final provider = _rand.nextBool() ? 'cloudflare' : 'ngrok';
     final session = BackendSession(
       id: _uuid.v4(),
       projectId: projectId,
       startedAt: DateTime.now(),
       isRunning: true,
-      publicUrl: _state.projects.firstWhere((p) => p.id == projectId).url,
-      tunnelProvider: provider,
+      publicUrl:
+          publicUrl ?? _state.projects.firstWhere((p) => p.id == projectId).url,
+      tunnelProvider: tunnelProvider,
       requestCount: 0,
       rps: 0,
       lowBattery: false,

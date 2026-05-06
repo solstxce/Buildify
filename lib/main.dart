@@ -1,10 +1,13 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'backend/cloudflare_service.dart';
 import 'backend/embedded_backend.dart';
 
 void main() {
@@ -27,6 +30,10 @@ final embeddedBackendProvider = Provider<EmbeddedBackendService>((ref) {
   unawaited(service.devLogin(userName: 'user'));
   ref.onDispose(service.dispose);
   return service;
+});
+
+final cloudflareServiceProvider = Provider<CloudflareService>((ref) {
+  return CloudflareService();
 });
 
 final serverProvider = StateNotifierProvider<ServerController, ServerState>((
@@ -163,6 +170,57 @@ class ServerController extends StateNotifier<ServerState> {
     await _backend.startSession(projectId: project.id);
   }
 
+  Future<String> deployProjectWithConfig({
+    required String sourceType,
+    required String projectName,
+    required String domain,
+    String? subdomain,
+    required String branch,
+    required String baseDirectory,
+    required String buildCommand,
+    required String publishDirectory,
+    required String functionsDirectory,
+    required String selectedPath,
+    required Map<String, String> envVars,
+  }) async {
+    final fallbackName = 'site-${state.projects.length + 1}';
+    final cleanedName =
+        projectName.trim().isEmpty ? fallbackName : projectName.trim();
+    final rawSubdomain = (subdomain ?? cleanedName)
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    final slug =
+        rawSubdomain.isEmpty
+            ? _backend.generateRandomSubdomain()
+            : rawSubdomain;
+    final cleanDomain = domain.trim().isEmpty ? 'buildify.app' : domain.trim();
+    final deployUrl = 'https://$slug.$cleanDomain';
+
+    final project = await _backend.createProject(
+      name: cleanedName,
+      sourceType: sourceType,
+      customUrl: deployUrl,
+    );
+    await _backend.createDeployment(
+      projectId: project.id,
+      framework: 'plain html',
+      sourceType: sourceType,
+    );
+    await _backend.startSession(
+      projectId: project.id,
+      publicUrl: deployUrl,
+      tunnelProvider: 'cloudflare',
+    );
+    return deployUrl;
+  }
+
+  String suggestRandomSubdomain() => _backend.generateRandomSubdomain();
+
+  BackendProject? resolveHostMapping(String hostname) {
+    return _backend.resolveHostname(hostname);
+  }
+
   void _syncFromBackend(BackendState backendState) {
     final session = backendState.activeSession;
     final mappedLogs = backendState.logs
@@ -249,6 +307,13 @@ final _router = GoRouter(
     GoRoute(
       path: '/import',
       builder: (context, state) => const ImportProjectScreen(),
+    ),
+    GoRoute(
+      path: '/deploy-config',
+      builder: (context, state) {
+        final args = state.extra! as DeployConfigArgs;
+        return DeployConfigScreen(args: args);
+      },
     ),
     StatefulShellRoute.indexedStack(
       builder: (context, state, navShell) => ShellScaffold(shell: navShell),
@@ -456,6 +521,7 @@ class ImportProjectScreen extends ConsumerStatefulWidget {
 class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
   String? selectedProvider;
   bool zipChosen = false;
+  String? selectedFolderPath;
 
   @override
   Widget build(BuildContext context) {
@@ -545,7 +611,7 @@ class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
           ),
           const SizedBox(height: 18),
           InkWell(
-            onTap: () => setState(() => zipChosen = true),
+            onTap: _pickFolderForUpload,
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 14),
               decoration: BoxDecoration(
@@ -565,8 +631,8 @@ class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
                   const Text('upload zip file', style: TextStyle(fontSize: 16)),
                   Text(
                     zipChosen
-                        ? 'zip selected'
-                        : 'drag and drop or click to browse',
+                        ? 'folder selected: ${_lastPathPart(selectedFolderPath ?? '')}'
+                        : 'drag and drop or click to browse folder',
                     style: const TextStyle(
                       fontSize: 13,
                       color: Color(0xFF55423E),
@@ -578,13 +644,13 @@ class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
           ),
           const SizedBox(height: 20),
           FilledButton(
-            onPressed: _onContinueAndStartServer,
+            onPressed: _goToDeployConfig,
             style: FilledButton.styleFrom(
               minimumSize: const Size.fromHeight(46),
               backgroundColor: BuildifyPalette.primary,
               foregroundColor: BuildifyPalette.bg,
             ),
-            child: const Text('continue and start server'),
+            child: const Text('continue'),
           ),
         ],
       ),
@@ -621,7 +687,42 @@ class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
     );
   }
 
-  Future<void> _onContinueAndStartServer() async {
+  Future<void> _pickFolderForUpload() async {
+    try {
+      final path = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'select project folder',
+      );
+      if (path == null || path.isEmpty) return;
+      setState(() {
+        zipChosen = true;
+        selectedFolderPath = path;
+      });
+    } on MissingPluginException {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+      if (picked == null || picked.files.isEmpty) return;
+      final filePath = picked.files.single.path ?? picked.files.single.name;
+      setState(() {
+        zipChosen = true;
+        selectedFolderPath = filePath;
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('folder picker unavailable, selected zip file instead'),
+        ),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('file picker error: ${e.message ?? e.code}')),
+      );
+    }
+  }
+
+  void _goToDeployConfig() {
     if (selectedProvider == null && !zipChosen) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -630,17 +731,290 @@ class _ImportProjectScreenState extends ConsumerState<ImportProjectScreen> {
       );
       return;
     }
-    await ref
-        .read(serverProvider.notifier)
-        .importProjectAndStart(
-          sourceType: selectedProvider ?? 'zip upload',
-          zipChosen: zipChosen,
-        );
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('your site is live.')));
-    context.go('/dashboard');
+    final args = DeployConfigArgs(
+      sourceType: selectedProvider ?? 'zip upload',
+      selectedPath: selectedFolderPath ?? '',
+      suggestedProjectName:
+          selectedFolderPath != null && selectedFolderPath!.isNotEmpty
+              ? _lastPathPart(selectedFolderPath!)
+              : 'my-project',
+    );
+    context.push('/deploy-config', extra: args);
+  }
+
+  String _lastPathPart(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final parts = normalized.split('/');
+    return parts.isNotEmpty ? parts.last : path;
+  }
+}
+
+class DeployConfigArgs {
+  const DeployConfigArgs({
+    required this.sourceType,
+    required this.selectedPath,
+    required this.suggestedProjectName,
+  });
+
+  final String sourceType;
+  final String selectedPath;
+  final String suggestedProjectName;
+}
+
+class DeployConfigScreen extends ConsumerStatefulWidget {
+  const DeployConfigScreen({required this.args, super.key});
+  final DeployConfigArgs args;
+
+  @override
+  ConsumerState<DeployConfigScreen> createState() => _DeployConfigScreenState();
+}
+
+class _DeployConfigScreenState extends ConsumerState<DeployConfigScreen> {
+  final _teamCtrl = TextEditingController(text: 'IDK');
+  final _projectCtrl = TextEditingController();
+  final _branchCtrl = TextEditingController(text: 'main');
+  final _baseCtrl = TextEditingController();
+  final _buildCtrl = TextEditingController();
+  final _publishCtrl = TextEditingController(text: 'dist');
+  final _functionsCtrl = TextEditingController(text: 'netlify/functions');
+  final _envCtrl = TextEditingController();
+  final _domainCtrl = TextEditingController();
+  final _zoneIdCtrl = TextEditingController();
+  final _apiTokenCtrl = TextEditingController();
+  final _targetCtrl = TextEditingController(text: 'example.trycloudflare.com');
+  final _subdomainCtrl = TextEditingController();
+  bool _autoSubdomain = true;
+  bool _deploying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _projectCtrl.text = widget.args.suggestedProjectName;
+    unawaited(_primeCloudflareConfig());
+  }
+
+  @override
+  void dispose() {
+    _teamCtrl.dispose();
+    _projectCtrl.dispose();
+    _branchCtrl.dispose();
+    _baseCtrl.dispose();
+    _buildCtrl.dispose();
+    _publishCtrl.dispose();
+    _functionsCtrl.dispose();
+    _envCtrl.dispose();
+    _domainCtrl.dispose();
+    _zoneIdCtrl.dispose();
+    _apiTokenCtrl.dispose();
+    _targetCtrl.dispose();
+    _subdomainCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('review configuration'),
+        backgroundColor: BuildifyPalette.surface,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            'let’s deploy your project with…',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'deploy as sujith8257 on ${_teamCtrl.text} team from ${_branchCtrl.text} branch',
+            style: const TextStyle(color: Color(0xFFA38B86)),
+          ),
+          const SizedBox(height: 16),
+          _labeledField('team', _teamCtrl),
+          _labeledField('project name', _projectCtrl),
+          _labeledField(
+            'cloudflare base domain',
+            _domainCtrl,
+            hint: 'example: yourdomain.com',
+          ),
+          _labeledField('cloudflare zone id', _zoneIdCtrl),
+          _labeledField(
+            'cloudflare api token',
+            _apiTokenCtrl,
+            hint: 'token with dns edit permission',
+          ),
+          _labeledField(
+            'cloudflare cname target',
+            _targetCtrl,
+            hint: 'e.g. your-tunnel.trycloudflare.com',
+          ),
+          SwitchListTile(
+            value: _autoSubdomain,
+            onChanged: (v) => setState(() => _autoSubdomain = v),
+            title: const Text('auto-generate subdomain'),
+            subtitle: const Text('netlify-style adjective-noun-number'),
+            contentPadding: EdgeInsets.zero,
+          ),
+          if (_autoSubdomain)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: OutlinedButton(
+                onPressed: () {
+                  final generated =
+                      ref
+                          .read(serverProvider.notifier)
+                          .suggestRandomSubdomain();
+                  setState(() => _subdomainCtrl.text = generated);
+                },
+                child: Text(
+                  _subdomainCtrl.text.isEmpty
+                      ? 'generate subdomain'
+                      : 'generated: ${_subdomainCtrl.text}',
+                ),
+              ),
+            ),
+          if (!_autoSubdomain)
+            _labeledField(
+              'custom subdomain',
+              _subdomainCtrl,
+              hint: 'e.g. myproject',
+            ),
+          _labeledField('branch to deploy', _branchCtrl),
+          _labeledField('base directory', _baseCtrl),
+          _labeledField(
+            'build command',
+            _buildCtrl,
+            hint: 'e.g. npm run build',
+          ),
+          _labeledField('publish directory', _publishCtrl, hint: 'e.g. dist'),
+          _labeledField('functions directory', _functionsCtrl),
+          _labeledField(
+            'environment variables',
+            _envCtrl,
+            hint: 'KEY=value (one per line)',
+            maxLines: 4,
+          ),
+          const SizedBox(height: 14),
+          FilledButton(
+            onPressed: _deploying ? null : _deployNow,
+            style: FilledButton.styleFrom(
+              backgroundColor: BuildifyPalette.primary,
+              foregroundColor: BuildifyPalette.bg,
+              minimumSize: const Size.fromHeight(46),
+            ),
+            child: Text(_deploying ? 'deploying...' : 'deploy project'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _labeledField(
+    String label,
+    TextEditingController controller, {
+    String? hint,
+    int maxLines = 1,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: Color(0xFFDBC1BA), fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          TextField(
+            controller: controller,
+            maxLines: maxLines,
+            decoration: InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: BuildifyPalette.surface,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deployNow() async {
+    setState(() => _deploying = true);
+    try {
+      final env = <String, String>{};
+      for (final line in _envCtrl.text.split('\n')) {
+        final t = line.trim();
+        if (t.isEmpty || !t.contains('=')) continue;
+        final split = t.split('=');
+        env[split.first.trim()] = split.skip(1).join('=').trim();
+      }
+
+      final cloudflare = ref.read(cloudflareServiceProvider);
+      final cfg = CloudflareConfig(
+        apiToken: _apiTokenCtrl.text.trim(),
+        zoneId: _zoneIdCtrl.text.trim(),
+        baseDomain: _domainCtrl.text.trim(),
+      );
+      await cloudflare.saveConfig(cfg);
+
+      final slug = _projectCtrl.text
+          .trim()
+          .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+          .replaceAll(RegExp(r'^-|-$'), '');
+      final chosenSubdomain =
+          _autoSubdomain
+              ? (_subdomainCtrl.text.isEmpty
+                  ? ref.read(serverProvider.notifier).suggestRandomSubdomain()
+                  : _subdomainCtrl.text)
+              : _subdomainCtrl.text;
+      final dnsUrl = await cloudflare.upsertCnameRecord(
+        config: cfg,
+        subdomain: chosenSubdomain.isEmpty ? slug : chosenSubdomain,
+        targetHostname: _targetCtrl.text.trim(),
+      );
+
+      final appUrl = await ref
+          .read(serverProvider.notifier)
+          .deployProjectWithConfig(
+            sourceType: widget.args.sourceType,
+            projectName: _projectCtrl.text,
+            domain: _domainCtrl.text,
+            subdomain: chosenSubdomain.isEmpty ? slug : chosenSubdomain,
+            branch: _branchCtrl.text,
+            baseDirectory: _baseCtrl.text,
+            buildCommand: _buildCtrl.text,
+            publishDirectory: _publishCtrl.text,
+            functionsDirectory: _functionsCtrl.text,
+            selectedPath: widget.args.selectedPath,
+            envVars: env,
+          );
+      if (!mounted) return;
+      setState(() => _deploying = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('dns: $dnsUrl | app: $appUrl')));
+      context.go('/dashboard');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _deploying = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('cloudflare deploy failed: $e')));
+    }
+  }
+
+  Future<void> _primeCloudflareConfig() async {
+    final cfg = await ref.read(cloudflareServiceProvider).loadConfig();
+    if (!mounted || cfg == null) return;
+    if (_domainCtrl.text.isEmpty) _domainCtrl.text = cfg.baseDomain;
+    if (_zoneIdCtrl.text.isEmpty) _zoneIdCtrl.text = cfg.zoneId;
+    if (_apiTokenCtrl.text.isEmpty) _apiTokenCtrl.text = cfg.apiToken;
   }
 }
 
@@ -1066,26 +1440,33 @@ class _MetricChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: 128,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
         color: BuildifyPalette.surface,
         border: Border.all(color: const Color(0xFF555555)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             label,
-            style: const TextStyle(fontSize: 12, color: Color(0xFFDBC1BA)),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 10, color: Color(0xFFDBC1BA)),
           ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 22,
-              color: BuildifyPalette.primary,
-              fontWeight: FontWeight.w700,
+          const SizedBox(height: 2),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 16,
+                color: BuildifyPalette.primary,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
