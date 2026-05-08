@@ -1,19 +1,14 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter_test/flutter_test.dart';
-
 import 'package:buildify_flutter/main.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 void main() {
-  testWidgets('shows splash brand', (WidgetTester tester) async {
-    await tester.pumpWidget(const BuildifyApp());
-    expect(find.text('buildify'), findsOneWidget);
-    expect(find.text('your phone. your server. go live.'), findsOneWidget);
-    await tester.pump(const Duration(seconds: 2));
+  testWidgets('shows mobile AI server home', (WidgetTester tester) async {
+    await tester.pumpWidget(const ProviderScope(child: BuildifyApp()));
+
+    expect(find.text('Buildify AI'), findsOneWidget);
+    expect(find.text('Server Stopped'), findsOneWidget);
+    expect(find.text('TinyLlama 1.1B Q4'), findsOneWidget);
+    expect(find.text('Start AI Server'), findsOneWidget);
   });
 }

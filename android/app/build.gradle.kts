@@ -37,6 +37,15 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Force AGP to extract jniLibs into nativeLibraryDir on install.
+    // We use jniLibs to ship llama-server (renamed to libllama-server.so) and
+    // its companion .so files so Android allows executing the binary.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter {

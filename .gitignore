@@ -12,34 +12,70 @@
 .swiftpm/
 migrate_working_dir/
 
-# IntelliJ related
+# Secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+secrets/
+**/google-services.json
+**/GoogleService-Info.plist
+
+# IntelliJ / Android Studio
 *.iml
 *.ipr
 *.iws
 .idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+# VS Code — uncomment to ignore local launch configs
+# .vscode/
 
-# Flutter/Dart/Pub related
+# Flutter / Dart / Pub
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
+.packages
 .pub-cache/
 .pub/
-/build/
+build/
+**/build/
 
-# Symbolication related
+# Generated / coverage
+coverage/
+*.freezed.dart
+*.g.dart
+# (uncomment if you use code generation heavily)
+# *.mocks.dart
+
+# Symbolication / obfuscation
 app.*.symbols
-
-# Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
+# Android — see also android/.gitignore
 /android/app/debug
 /android/app/profile
 /android/app/release
+**/local.properties
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/ServiceDefinitions.json
+
+# macOS (optional local framework copies)
+**/macos/Flutter/ephemeral/
+
+# FVM
+.fvm/
+
+# Large local copies of release tarballs (optional — remove line if you track them)
+llama-b*/
+
+# APK / bundle outputs (optional local builds)
+*.apk
+*.aab
+*.ipa
