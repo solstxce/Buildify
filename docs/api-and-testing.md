@@ -2,6 +2,9 @@
 
 Assume the app shows **local IP** (e.g. `192.168.1.5`) and port **8080** (configurable in UI).
 
+<img width="1066" height="808" alt="image" src="https://github.com/user-attachments/assets/7fc3bf3b-97bb-4232-9b33-c3b80a937ea8" />
+
+
 **Base URL:** `http://<phone-ip>:8080`
 
 ## Health
