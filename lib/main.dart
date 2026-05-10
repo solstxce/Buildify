@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -171,6 +173,52 @@ class ChatMessage {
   final DateTime createdAt;
 }
 
+class SecuritySettings {
+  const SecuritySettings({
+    required this.requireApiKey,
+    required this.apiKey,
+    required this.idleTimeoutMinutes,
+    required this.batteryStopPercent,
+    required this.thermalStop,
+  });
+
+  final bool requireApiKey;
+  final String apiKey;
+  final int idleTimeoutMinutes;
+  final int batteryStopPercent;
+  final bool thermalStop;
+
+  static const empty = SecuritySettings(
+    requireApiKey: false,
+    apiKey: '',
+    idleTimeoutMinutes: 0,
+    batteryStopPercent: 0,
+    thermalStop: true,
+  );
+
+  String get maskedApiKey {
+    if (apiKey.isEmpty) return '—';
+    if (apiKey.length <= 6) return '••••••';
+    return '${apiKey.substring(0, 4)}…${apiKey.substring(apiKey.length - 4)}';
+  }
+
+  SecuritySettings copyWith({
+    bool? requireApiKey,
+    String? apiKey,
+    int? idleTimeoutMinutes,
+    int? batteryStopPercent,
+    bool? thermalStop,
+  }) {
+    return SecuritySettings(
+      requireApiKey: requireApiKey ?? this.requireApiKey,
+      apiKey: apiKey ?? this.apiKey,
+      idleTimeoutMinutes: idleTimeoutMinutes ?? this.idleTimeoutMinutes,
+      batteryStopPercent: batteryStopPercent ?? this.batteryStopPercent,
+      thermalStop: thermalStop ?? this.thermalStop,
+    );
+  }
+}
+
 class AiServerState {
   const AiServerState({
     required this.models,
@@ -187,6 +235,7 @@ class AiServerState {
     required this.tokenLimit,
     required this.logs,
     required this.chat,
+    required this.security,
   });
 
   final List<ModelProfile> models;
@@ -203,6 +252,7 @@ class AiServerState {
   final int tokenLimit;
   final List<ServerLog> logs;
   final List<ChatMessage> chat;
+  final SecuritySettings security;
 
   AiServerState copyWith({
     List<ModelProfile>? models,
@@ -219,6 +269,7 @@ class AiServerState {
     int? tokenLimit,
     List<ServerLog>? logs,
     List<ChatMessage>? chat,
+    SecuritySettings? security,
   }) {
     return AiServerState(
       models: models ?? this.models,
@@ -235,6 +286,7 @@ class AiServerState {
       tokenLimit: tokenLimit ?? this.tokenLimit,
       logs: logs ?? this.logs,
       chat: chat ?? this.chat,
+      security: security ?? this.security,
     );
   }
 }
@@ -274,9 +326,11 @@ class AiServerController extends StateNotifier<AiServerState> {
             ),
           ],
           chat: const [],
+          security: SecuritySettings.empty,
         ),
       ) {
     unawaited(_hydrateNativeState());
+    unawaited(_loadSecuritySettings());
   }
 
   static const _modelCatalog = [
@@ -324,6 +378,15 @@ class AiServerController extends StateNotifier<AiServerState> {
   String? _modelBasePath;
   final Map<String, http.Client> _downloadClients = {};
   final Map<String, StreamSubscription<List<int>>> _downloadSubs = {};
+  final FlutterSecureStorage _secure = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  static const _kSecRequire = 'sec_require_api_key';
+  static const _kSecApiKey = 'sec_api_key';
+  static const _kSecIdleMinutes = 'sec_idle_minutes';
+  static const _kSecBatteryPct = 'sec_battery_pct';
+  static const _kSecThermal = 'sec_thermal_stop';
 
   ModelProfile get selectedModel =>
       state.models.firstWhere((model) => model.id == state.selectedModelId);
@@ -352,6 +415,98 @@ class AiServerController extends StateNotifier<AiServerState> {
       }
     }
     await _scanExistingModels();
+  }
+
+  Future<void> _loadSecuritySettings() async {
+    try {
+      final require = (await _secure.read(key: _kSecRequire)) == '1';
+      var key = (await _secure.read(key: _kSecApiKey)) ?? '';
+      if (key.isEmpty) {
+        key = _generateApiKey();
+        await _secure.write(key: _kSecApiKey, value: key);
+      }
+      final idle =
+          int.tryParse((await _secure.read(key: _kSecIdleMinutes)) ?? '') ?? 0;
+      final battery =
+          int.tryParse((await _secure.read(key: _kSecBatteryPct)) ?? '') ?? 0;
+      final thermal = (await _secure.read(key: _kSecThermal)) != '0';
+      state = state.copyWith(
+        security: SecuritySettings(
+          requireApiKey: require,
+          apiKey: key,
+          idleTimeoutMinutes: idle,
+          batteryStopPercent: battery,
+          thermalStop: thermal,
+        ),
+      );
+      _appendLog(
+        'security loaded: '
+        'apiKey=${require ? "required" : "off"}, '
+        'idle=${idle == 0 ? "off" : "${idle}m"}, '
+        'battery=${battery == 0 ? "off" : "$battery%"}, '
+        'thermal=${thermal ? "on" : "off"}',
+        LogType.system,
+      );
+    } catch (e) {
+      _appendLog('security load failed: $e', LogType.warning);
+    }
+  }
+
+  String _generateApiKey() {
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    final r = Random.secure();
+    final buf = StringBuffer('bk_');
+    for (var i = 0; i < 32; i++) {
+      buf.write(chars[r.nextInt(chars.length)]);
+    }
+    return buf.toString();
+  }
+
+  Future<void> setRequireApiKey(bool value) async {
+    state = state.copyWith(security: state.security.copyWith(requireApiKey: value));
+    await _secure.write(key: _kSecRequire, value: value ? '1' : '0');
+    _appendLog(
+      value ? 'api key required for incoming requests' : 'api key disabled',
+      LogType.system,
+    );
+    if (state.status == ServerStatus.running) {
+      _appendLog(
+        'restart the server to apply api key change',
+        LogType.warning,
+      );
+    }
+  }
+
+  Future<void> regenerateApiKey() async {
+    final next = _generateApiKey();
+    state = state.copyWith(security: state.security.copyWith(apiKey: next));
+    await _secure.write(key: _kSecApiKey, value: next);
+    _appendLog('new api key generated', LogType.system);
+    if (state.status == ServerStatus.running && state.security.requireApiKey) {
+      _appendLog('restart the server to apply new key', LogType.warning);
+    }
+  }
+
+  Future<void> setIdleTimeoutMinutes(int minutes) async {
+    final clamped = minutes.clamp(0, 240);
+    state = state.copyWith(
+      security: state.security.copyWith(idleTimeoutMinutes: clamped),
+    );
+    await _secure.write(key: _kSecIdleMinutes, value: '$clamped');
+  }
+
+  Future<void> setBatteryStopPercent(int pct) async {
+    final clamped = pct.clamp(0, 80);
+    state = state.copyWith(
+      security: state.security.copyWith(batteryStopPercent: clamped),
+    );
+    await _secure.write(key: _kSecBatteryPct, value: '$clamped');
+  }
+
+  Future<void> setThermalStop(bool value) async {
+    state = state.copyWith(security: state.security.copyWith(thermalStop: value));
+    await _secure.write(key: _kSecThermal, value: value ? '1' : '0');
   }
 
   Future<void> _scanExistingModels() async {
@@ -597,9 +752,14 @@ class AiServerController extends StateNotifier<AiServerState> {
     state = state.copyWith(status: ServerStatus.starting);
     _appendLog('loading ${selectedModel.fileName}', LogType.system);
     _modelBasePath ??= await _native.getModelBasePath();
+    final sec = state.security;
     final response = await _native.startServer(
       modelPath: _modelPathFor(selectedModel),
       port: state.port,
+      apiKey: sec.requireApiKey ? sec.apiKey : null,
+      idleMinutes: sec.idleTimeoutMinutes,
+      batteryStopPercent: sec.batteryStopPercent,
+      thermalStop: sec.thermalStop,
     );
     if (!response.ok) {
       state = state.copyWith(status: ServerStatus.stopped);
@@ -644,13 +804,36 @@ class AiServerController extends StateNotifier<AiServerState> {
 
     _startedAt = DateTime.now();
     _uptimeTimer?.cancel();
-    _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    var ticks = 0;
+    _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       final started = _startedAt;
       if (started == null || state.status != ServerStatus.running) return;
       state = state.copyWith(
         uptime: DateTime.now().difference(started),
         requestsPerSecond: state.requestsPerSecond * 0.6,
       );
+      ticks++;
+      if (ticks % 5 == 0) {
+        final live = await _native.getServerStatus();
+        if (live != null &&
+            live.status == 'stopped' &&
+            state.status == ServerStatus.running) {
+          _uptimeTimer?.cancel();
+          _startedAt = null;
+          state = state.copyWith(
+            status: ServerStatus.stopped,
+            uptime: Duration.zero,
+            requestsPerSecond: 0,
+          );
+          final reason = live.stopReason;
+          _appendLog(
+            reason != null && reason.isNotEmpty
+                ? 'auto-stop: $reason'
+                : (live.lastError ?? 'server stopped unexpectedly'),
+            LogType.warning,
+          );
+        }
+      }
     });
     state = state.copyWith(
       status: ServerStatus.running,
@@ -741,13 +924,15 @@ class AiServerController extends StateNotifier<AiServerState> {
 
     final stopwatch = Stopwatch()..start();
     String answer;
+    final sec = state.security;
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      if (sec.requireApiKey && sec.apiKey.isNotEmpty)
+        'Authorization': 'Bearer ${sec.apiKey}',
+    };
     try {
       final resp = await http
-          .post(
-            url,
-            headers: const {'Content-Type': 'application/json'},
-            body: body,
-          )
+          .post(url, headers: headers, body: body)
           .timeout(const Duration(seconds: 120));
       stopwatch.stop();
 
@@ -873,11 +1058,22 @@ class NativeServerBridge {
   Future<NativeServerResponse> startServer({
     required String modelPath,
     required int port,
+    String? apiKey,
+    int idleMinutes = 0,
+    int batteryStopPercent = 0,
+    bool thermalStop = true,
   }) async {
     try {
       final raw = await _channel.invokeMapMethod<String, dynamic>(
         'startServer',
-        {'modelPath': modelPath, 'port': port},
+        <String, dynamic>{
+          'modelPath': modelPath,
+          'port': port,
+          if (apiKey != null && apiKey.isNotEmpty) 'apiKey': apiKey,
+          'idleMinutes': idleMinutes,
+          'batteryStopPct': batteryStopPercent,
+          'thermalStop': thermalStop,
+        },
       );
       return NativeServerResponse.fromMap(raw);
     } on PlatformException catch (e) {
@@ -960,12 +1156,14 @@ class NativeServerStatus {
     required this.port,
     this.modelPath,
     this.lastError,
+    this.stopReason,
   });
 
   final String status;
   final int port;
   final String? modelPath;
   final String? lastError;
+  final String? stopReason;
 
   factory NativeServerStatus.fromMap(Map<String, dynamic> data) {
     return NativeServerStatus(
@@ -973,6 +1171,7 @@ class NativeServerStatus {
       port: data['port'] as int? ?? 8080,
       modelPath: data['modelPath'] as String?,
       lastError: data['lastError'] as String?,
+      stopReason: data['stopReason'] as String?,
     );
   }
 }
@@ -1116,6 +1315,10 @@ class HomeScreen extends ConsumerWidget {
         _SectionTitle('Runtime'),
         const SizedBox(height: 8),
         _RuntimeControls(state: state),
+        const SizedBox(height: 18),
+        const _SectionTitle('Security & Safety'),
+        const SizedBox(height: 8),
+        const _SecurityCard(),
         const SizedBox(height: 18),
         Row(
           children: [
@@ -1355,6 +1558,12 @@ class NetworkScreen extends ConsumerWidget {
                 _InfoRow(label: 'Local IP', value: state.device.ipAddress),
                 _InfoRow(label: 'Port', value: '${state.port}'),
                 _InfoRow(label: 'Status', value: _statusLabel(state.status)),
+                _InfoRow(
+                  label: 'Auth',
+                  value: state.security.requireApiKey
+                      ? 'API key required'
+                      : 'Open (no key)',
+                ),
                 const SizedBox(height: 10),
                 Container(
                   width: double.infinity,
@@ -1629,6 +1838,177 @@ class _RuntimeControls extends ConsumerWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SecurityCard extends ConsumerStatefulWidget {
+  const _SecurityCard();
+
+  @override
+  ConsumerState<_SecurityCard> createState() => _SecurityCardState();
+}
+
+class _SecurityCardState extends ConsumerState<_SecurityCard> {
+  bool _revealKey = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(aiServerProvider);
+    final controller = ref.read(aiServerProvider.notifier);
+    final sec = state.security;
+    final running = state.status == ServerStatus.running;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _SubSectionTitle(
+              icon: Icons.vpn_key_outlined,
+              text: 'API key',
+            ),
+            SwitchListTile(
+              value: sec.requireApiKey,
+              onChanged: (v) => controller.setRequireApiKey(v),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Require API key'),
+              subtitle: const Text(
+                'Clients must send Authorization: Bearer <key>',
+                style: TextStyle(color: AppPalette.muted, fontSize: 12),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppPalette.border),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      _revealKey
+                          ? (sec.apiKey.isEmpty ? '—' : sec.apiKey)
+                          : sec.maskedApiKey,
+                      style: const TextStyle(
+                        color: AppPalette.teal,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: _revealKey ? 'Hide key' : 'Show key',
+                    onPressed: sec.apiKey.isEmpty
+                        ? null
+                        : () => setState(() => _revealKey = !_revealKey),
+                    icon: Icon(
+                      _revealKey
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                      size: 20,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Copy key',
+                    onPressed: sec.apiKey.isEmpty
+                        ? null
+                        : () => _copyKey(context, sec.apiKey),
+                    icon: const Icon(Icons.copy, size: 18),
+                  ),
+                  IconButton(
+                    tooltip: 'Regenerate key',
+                    onPressed: () => controller.regenerateApiKey(),
+                    icon: const Icon(Icons.refresh, size: 20),
+                  ),
+                ],
+              ),
+            ),
+            if (running && sec.requireApiKey) ...[
+              const SizedBox(height: 6),
+              const Text(
+                'Restart the server for key changes to take effect.',
+                style: TextStyle(color: AppPalette.amber, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 16),
+            const _SubSectionTitle(
+              icon: Icons.shield_outlined,
+              text: 'Auto-stop',
+            ),
+            _SliderRow(
+              label: 'Idle timeout',
+              valueLabel:
+                  sec.idleTimeoutMinutes == 0 ? 'Off' : '${sec.idleTimeoutMinutes} min',
+              value: sec.idleTimeoutMinutes.toDouble(),
+              min: 0,
+              max: 60,
+              divisions: 12,
+              onChanged: (v) => controller.setIdleTimeoutMinutes(v.round()),
+            ),
+            _SliderRow(
+              label: 'Stop below battery',
+              valueLabel:
+                  sec.batteryStopPercent == 0 ? 'Off' : '${sec.batteryStopPercent}%',
+              value: sec.batteryStopPercent.toDouble(),
+              min: 0,
+              max: 50,
+              divisions: 10,
+              onChanged: (v) => controller.setBatteryStopPercent(v.round()),
+            ),
+            SwitchListTile(
+              value: sec.thermalStop,
+              onChanged: (v) => controller.setThermalStop(v),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Stop on thermal warning'),
+              subtitle: const Text(
+                'Stops the server if the device gets too hot (Android 10+).',
+                style: TextStyle(color: AppPalette.muted, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyKey(BuildContext context, String key) async {
+    await Clipboard.setData(ClipboardData(text: key));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('API key copied')),
+    );
+  }
+}
+
+class _SubSectionTitle extends StatelessWidget {
+  const _SubSectionTitle({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: AppPalette.teal),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
       ),
     );
   }
