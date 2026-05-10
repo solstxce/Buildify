@@ -22,11 +22,23 @@ class MainActivity : FlutterActivity() {
                     "startServer" -> {
                         val modelPath = call.argument<String>("modelPath")
                         val port = call.argument<Int>("port") ?: 8080
+                        val apiKey = call.argument<String>("apiKey")
+                        val idleMinutes = call.argument<Int>("idleMinutes") ?: 0
+                        val batteryStopPct = call.argument<Int>("batteryStopPct") ?: 0
+                        val thermalStop = call.argument<Boolean>("thermalStop") ?: true
                         if (modelPath.isNullOrBlank()) {
                             result.error("INVALID_ARGS", "modelPath is required", null)
                             return@setMethodCallHandler
                         }
-                        AiServerService.startService(this, modelPath, port)
+                        AiServerService.startService(
+                            this,
+                            modelPath,
+                            port,
+                            apiKey = apiKey,
+                            idleMinutes = idleMinutes,
+                            batteryStopPct = batteryStopPct,
+                            thermalStop = thermalStop,
+                        )
                         result.success(
                             mapOf(
                                 "ok" to true,
@@ -53,6 +65,7 @@ class MainActivity : FlutterActivity() {
                                 "port" to AiServerService.currentPort,
                                 "modelPath" to AiServerService.currentModelPath,
                                 "lastError" to AiServerService.lastError,
+                                "stopReason" to AiServerService.stopReason,
                             ),
                         )
                     }

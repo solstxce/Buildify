@@ -9,11 +9,12 @@ Rough phases discussed during development. Status is indicative — check the co
 | 3 | Run llama.cpp server on device | Done (jniLibs + `libllama-server.so`) |
 | 4 | Real GGUF download + progress + verify | Done (HTTP stream in `lib/main.dart`) |
 | 5 | JNI / `libllama.so` in-process (performance) | Not started |
-| — | Chat tab calls real HTTP instead of simulated text | Optional next |
+| — | Chat tab calls real HTTP instead of simulated text | Done (Self test tab) |
+| — | API key for LAN (`Authorization: Bearer …`) | Done (`docs/security-and-safety.md`) |
+| — | Idle / thermal / battery auto-stop | Done (`docs/security-and-safety.md`) |
 | — | Wi‑Fi-only download toggle | Optional |
-| — | API key + rate limit for LAN | Optional |
+| — | Rate limiting / per-client keys | Optional |
 | — | QR code for base URL | Optional |
-| — | Idle / thermal / battery auto-stop | Optional |
 
 ## Native binary source of truth
 
