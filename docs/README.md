@@ -12,5 +12,6 @@ Index of guides for **Buildify AI Server** (Flutter Android → local LLM HTTP s
 | [troubleshooting.md](troubleshooting.md) | Common errors (`Permission denied`, missing `.so`, Wi‑Fi) |
 | [product-vision.md](product-vision.md) | Goals, constraints (local-only), what we do *not* ship |
 | [roadmap.md](roadmap.md) | Implemented vs planned phases |
+| [marketing-site-deployment.md](marketing-site-deployment.md) | **buildify.me** — pnpm vs npm, Vercel vs GitHub Pages, Cloudflare DNS |
 
-Project root [README.md](../README.md) has **quick start** and **contributing** (Git workflow, PR checklist).
+Project root [README.md](../README.md) has **quick start** and **contributing** (Git workflow, PR checklist). The Next.js site lives in [website/](../website/).

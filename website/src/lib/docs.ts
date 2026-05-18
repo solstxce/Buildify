@@ -14,6 +14,7 @@ const ORDER = [
   "security-and-safety",
   "troubleshooting",
   "roadmap",
+  "marketing-site-deployment",
 ];
 
 const TITLES: Record<string, string> = {
@@ -27,6 +28,7 @@ const TITLES: Record<string, string> = {
   troubleshooting: "Troubleshooting",
   roadmap: "Roadmap",
   JNIBundle: "JNI bundle layout",
+  "marketing-site-deployment": "Marketing site deployment",
 };
 
 const DESCRIPTIONS: Record<string, string> = {
@@ -45,6 +47,8 @@ const DESCRIPTIONS: Record<string, string> = {
   troubleshooting: "Common errors and how to fix them fast.",
   roadmap: "Phases that are done, in progress, and planned.",
   JNIBundle: "How to copy the llama-server release tarball into jniLibs/.",
+  "marketing-site-deployment":
+    "pnpm vs npm, Vercel vs GitHub Pages, and Cloudflare DNS for buildify.me.",
 };
 
 export interface DocMeta {

@@ -6,6 +6,8 @@ Built with Next.js 16 (App Router) + Tailwind 4 + shadcn/ui + Magic UI component
 
 ## Quick start
 
+We use **pnpm** (not npm) for this folder — see [why pnpm?](../docs/marketing-site-deployment.md#1-why-pnpm-instead-of-npm) in the deployment guide.
+
 ```bash
 cd website
 pnpm install
@@ -30,11 +32,19 @@ pnpm build
 pnpm start
 ```
 
-The site is a normal Next.js app and works on:
+## Deployment & tooling (read this before going live)
 
-- **Vercel** (recommended) — push to GitHub, import in Vercel, point `buildify.me` at it via CNAME.
-- **Cloudflare Pages** — use `@cloudflare/next-on-pages` for App Router compatibility.
-- Any Node-hosting that supports Next.js 16.
+Full explanations (pnpm vs npm, Vercel vs GitHub Pages, Cloudflare DNS + Vercel):
+
+**[docs/marketing-site-deployment.md](../docs/marketing-site-deployment.md)**
+
+Summary:
+
+| Question | Short answer |
+|----------|----------------|
+| Why **pnpm**? | Faster, less disk, stricter deps; lockfile is `pnpm-lock.yaml`. |
+| Why **Vercel**, not GitHub Pages? | Next.js + `/api/waitlist` needs a server; Pages is static-only. |
+| Why **Cloudflare DNS** + Vercel? | Cloudflare keeps your domain/DNS (and future phone tunnel); Vercel runs the website. |
 
 ## Waitlist storage
 
@@ -57,18 +67,19 @@ Recommended next-up integrations:
 - Components: `src/components/site/*` are page-level, `src/components/ui/*` are shadcn + Magic UI primitives.
 - Docs source: `../docs/*.md` (the repo's existing docs are pulled at build time).
 
-## Deploying to Vercel
+## Deploying to Vercel (quick)
 
 ```bash
-vercel link
-vercel --prod
+cd website
+pnpm dlx vercel link
+pnpm dlx vercel --prod
 ```
 
-DNS:
+In **Cloudflare DNS** (values from Vercel → Domains, not guesswork):
 
 ```text
-A      buildify.me            76.76.21.21
-CNAME  www.buildify.me        cname.vercel-dns.com
+A      @    →  (IP shown by Vercel, often 76.76.21.21)
+CNAME  www  →  cname.vercel-dns.com
 ```
 
-(Use Vercel's UI prompts — these are illustrative.)
+See [marketing-site-deployment.md](../docs/marketing-site-deployment.md#3-cloudflare-dns--vercel--how-it-fits-together) for the full picture.
