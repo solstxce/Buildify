@@ -10,7 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 const _catalogRemoteUrl =
-    'https://raw.githubusercontent.com/nicobots/Buildify/main/assets/models/catalog.json';
+    'https://raw.githubusercontent.com/Sujith8257/Buildify/main/assets/models/catalog.json';
 
 void main() {
   runApp(const ProviderScope(child: BuildifyApp()));
