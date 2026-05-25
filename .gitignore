@@ -75,6 +75,12 @@ app.*.map.json
 # Large local copies of release tarballs (optional — remove line if you track them)
 llama-b*/
 
+# Native binaries shipped via jniLibs — use Git LFS or document manual copy steps
+# README.txt files are tracked so the folder structure and docs remain in the repo
+android/app/src/main/jniLibs/arm64-v8a/lib*.so
+android/app/src/main/jniLibs/arm64-v8a/LICENSE
+android/app/src/main/jniLibs/armeabi-v7a/lib*.so
+
 # APK / bundle outputs (optional local builds)
 *.apk
 *.aab
