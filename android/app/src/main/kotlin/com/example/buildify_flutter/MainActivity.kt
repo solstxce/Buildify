@@ -80,6 +80,38 @@ class MainActivity : FlutterActivity() {
                         result.success(getLocalIpAddress())
                     }
 
+                    "startTunnel" -> {
+                        val port = call.argument<Int>("port") ?: 8080
+                        val tunnelUrl = call.argument<String>("tunnelUrl")
+                        CloudflareTunnelService.startTunnel(this, port, tunnelUrl)
+                        result.success(
+                            mapOf(
+                                "ok" to true,
+                                "status" to CloudflareTunnelService.currentStatus.name.lowercase(),
+                            ),
+                        )
+                    }
+
+                    "stopTunnel" -> {
+                        CloudflareTunnelService.stopTunnel(this)
+                        result.success(
+                            mapOf(
+                                "ok" to true,
+                                "status" to CloudflareTunnelService.currentStatus.name.lowercase(),
+                            ),
+                        )
+                    }
+
+                    "getTunnelStatus" -> {
+                        result.success(
+                            mapOf(
+                                "status" to CloudflareTunnelService.currentStatus.name.lowercase(),
+                                "publicUrl" to CloudflareTunnelService.lastPublicUrl,
+                                "lastError" to CloudflareTunnelService.lastError,
+                            ),
+                        )
+                    }
+
                     else -> result.notImplemented()
                 }
             }

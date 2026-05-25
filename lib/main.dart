@@ -83,6 +83,8 @@ final aiServerProvider =
 
 enum ServerStatus { stopped, starting, running, stopping }
 
+enum TunnelStatus { stopped, starting, running, failed }
+
 enum ModelDownloadStatus { notDownloaded, downloading, downloaded }
 
 class ModelProfile {
@@ -165,6 +167,30 @@ class DeviceSnapshot {
       batteryPercent: batteryPercent ?? this.batteryPercent,
       ipAddress: ipAddress ?? this.ipAddress,
       cpuLabel: cpuLabel ?? this.cpuLabel,
+    );
+  }
+}
+
+class TunnelState {
+  const TunnelState({
+    required this.status,
+    this.publicUrl,
+    this.lastError,
+  });
+
+  final TunnelStatus status;
+  final String? publicUrl;
+  final String? lastError;
+
+  TunnelState copyWith({
+    TunnelStatus? status,
+    String? publicUrl,
+    String? lastError,
+  }) {
+    return TunnelState(
+      status: status ?? this.status,
+      publicUrl: publicUrl ?? this.publicUrl,
+      lastError: lastError ?? this.lastError,
     );
   }
 }
@@ -253,6 +279,7 @@ class AiServerState {
     required this.logs,
     required this.chat,
     required this.security,
+    required this.tunnel,
   });
 
   final List<ModelProfile> models;
@@ -270,6 +297,7 @@ class AiServerState {
   final List<ServerLog> logs;
   final List<ChatMessage> chat;
   final SecuritySettings security;
+  final TunnelState tunnel;
 
   AiServerState copyWith({
     List<ModelProfile>? models,
@@ -287,6 +315,7 @@ class AiServerState {
     List<ServerLog>? logs,
     List<ChatMessage>? chat,
     SecuritySettings? security,
+    TunnelState? tunnel,
   }) {
     return AiServerState(
       models: models ?? this.models,
@@ -304,6 +333,7 @@ class AiServerState {
       logs: logs ?? this.logs,
       chat: chat ?? this.chat,
       security: security ?? this.security,
+      tunnel: tunnel ?? this.tunnel,
     );
   }
 }
@@ -338,6 +368,7 @@ class AiServerController extends StateNotifier<AiServerState> {
           ],
           chat: const [],
           security: SecuritySettings.empty,
+          tunnel: const TunnelState(status: TunnelStatus.stopped),
         ),
       ) {
     unawaited(_loadCatalogAndHydrate());
@@ -928,6 +959,76 @@ class AiServerController extends StateNotifier<AiServerState> {
     _appendLog('server stopped', LogType.system);
   }
 
+  Future<void> startTunnel() async {
+    if (state.tunnel.status == TunnelStatus.running ||
+        state.tunnel.status == TunnelStatus.starting) {
+      return;
+    }
+    if (state.status != ServerStatus.running) {
+      _appendLog('start the AI server before enabling tunnel', LogType.warning);
+      return;
+    }
+    state = state.copyWith(tunnel: const TunnelState(status: TunnelStatus.starting));
+    _appendLog('starting cloudflare tunnel on port ${state.port}', LogType.system);
+    final response = await _native.startTunnel(port: state.port);
+    if (!response.ok) {
+      state = state.copyWith(
+        tunnel: TunnelState(status: TunnelStatus.failed, lastError: response.message),
+      );
+      _appendLog('tunnel start failed: ${response.message}', LogType.warning);
+      return;
+    }
+    _pollTunnelStatus();
+  }
+
+  Future<void> stopTunnel() async {
+    if (state.tunnel.status == TunnelStatus.stopped) return;
+    state = state.copyWith(tunnel: const TunnelState(status: TunnelStatus.stopped));
+    await _native.stopTunnel();
+    _appendLog('cloudflare tunnel stopped', LogType.system);
+  }
+
+  void _pollTunnelStatus() {
+    Future.delayed(const Duration(seconds: 2), () async {
+      final live = await _native.getTunnelStatus();
+      if (live == null) {
+        if (state.tunnel.status == TunnelStatus.starting) {
+          state = state.copyWith(
+            tunnel: const TunnelState(status: TunnelStatus.failed, lastError: 'no response from native'),
+          );
+        }
+        return;
+      }
+      final newStatus = _tunnelStatusFromNative(live.status);
+      state = state.copyWith(
+        tunnel: TunnelState(
+          status: newStatus,
+          publicUrl: live.publicUrl,
+          lastError: live.lastError,
+        ),
+      );
+      if (newStatus == TunnelStatus.running && live.publicUrl != null) {
+        _appendLog('tunnel active: ${live.publicUrl}', LogType.system);
+      } else if (newStatus == TunnelStatus.failed) {
+        _appendLog(
+          'tunnel failed: ${live.lastError ?? "unknown"}',
+          LogType.warning,
+        );
+      } else if (newStatus == TunnelStatus.starting) {
+        _pollTunnelStatus();
+      }
+    });
+  }
+
+  TunnelStatus _tunnelStatusFromNative(String? nativeStatus) {
+    return switch (nativeStatus) {
+      'running' => TunnelStatus.running,
+      'starting' => TunnelStatus.starting,
+      'failed' => TunnelStatus.failed,
+      _ => TunnelStatus.stopped,
+    };
+  }
+
   void setLowPowerMode(bool enabled) {
     state = state.copyWith(
       lowPowerMode: enabled,
@@ -1179,6 +1280,53 @@ class NativeServerBridge {
       return null;
     }
   }
+
+  Future<NativeTunnelResponse> startTunnel({
+    required int port,
+    String? tunnelUrl,
+  }) async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'startTunnel',
+        <String, dynamic>{
+          'port': port,
+          if (tunnelUrl != null) 'tunnelUrl': tunnelUrl,
+        },
+      );
+      return NativeTunnelResponse.fromMap(raw);
+    } on PlatformException catch (e) {
+      return NativeTunnelResponse(
+        ok: false,
+        status: 'stopped',
+        message: e.message ?? e.code,
+      );
+    }
+  }
+
+  Future<NativeTunnelResponse> stopTunnel() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>('stopTunnel');
+      return NativeTunnelResponse.fromMap(raw);
+    } on PlatformException catch (e) {
+      return NativeTunnelResponse(
+        ok: false,
+        status: 'running',
+        message: e.message ?? e.code,
+      );
+    }
+  }
+
+  Future<NativeTunnelStatus?> getTunnelStatus() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'getTunnelStatus',
+      );
+      if (raw == null) return null;
+      return NativeTunnelStatus.fromMap(raw);
+    } on PlatformException {
+      return null;
+    }
+  }
 }
 
 class NativeServerResponse {
@@ -1226,6 +1374,46 @@ class NativeServerStatus {
       modelPath: data['modelPath'] as String?,
       lastError: data['lastError'] as String?,
       stopReason: data['stopReason'] as String?,
+    );
+  }
+}
+
+class NativeTunnelResponse {
+  const NativeTunnelResponse({
+    required this.ok,
+    required this.status,
+    this.message,
+  });
+
+  final bool ok;
+  final String status;
+  final String? message;
+
+  factory NativeTunnelResponse.fromMap(Map<String, dynamic>? data) {
+    return NativeTunnelResponse(
+      ok: data?['ok'] as bool? ?? false,
+      status: data?['status'] as String? ?? 'stopped',
+      message: data?['message'] as String?,
+    );
+  }
+}
+
+class NativeTunnelStatus {
+  const NativeTunnelStatus({
+    required this.status,
+    this.publicUrl,
+    this.lastError,
+  });
+
+  final String status;
+  final String? publicUrl;
+  final String? lastError;
+
+  factory NativeTunnelStatus.fromMap(Map<String, dynamic> data) {
+    return NativeTunnelStatus(
+      status: data['status'] as String? ?? 'stopped',
+      publicUrl: data['publicUrl'] as String?,
+      lastError: data['lastError'] as String?,
     );
   }
 }
@@ -1628,11 +1816,12 @@ class NetworkScreen extends ConsumerWidget {
     final state = ref.watch(aiServerProvider);
     final controller = ref.read(aiServerProvider.notifier);
     final baseUrl = controller.apiBaseUrl;
+    final tunnel = state.tunnel;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        _SectionTitle('Network'),
+        const _SectionTitle('Network'),
         const SizedBox(height: 8),
         Card(
           child: Padding(
@@ -1671,6 +1860,110 @@ class NetworkScreen extends ConsumerWidget {
                   onPressed: () => _copyApiUrl(context, baseUrl),
                   icon: const Icon(Icons.copy),
                   label: const Text('Copy API URL'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const _SectionTitle('Cloudflare Tunnel'),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    _TunnelDot(status: tunnel.status),
+                    const SizedBox(width: 8),
+                    Text(
+                      _tunnelStatusLabel(tunnel.status),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                if (tunnel.publicUrl != null) ...[
+                  const SizedBox(height: 10),
+                  const Text('Public URL', style: TextStyle(color: AppPalette.muted, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppPalette.border),
+                    ),
+                    child: SelectableText(
+                      tunnel.publicUrl!,
+                      style: const TextStyle(
+                        color: AppPalette.primary,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: () {
+                      if (tunnel.publicUrl != null) {
+                        unawaited(Clipboard.setData(ClipboardData(text: tunnel.publicUrl!)));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Tunnel URL copied')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy Tunnel URL'),
+                  ),
+                ],
+                if (tunnel.lastError != null && tunnel.status == TunnelStatus.failed) ...[
+                  const SizedBox(height: 8),
+                  Text(tunnel.lastError!, style: const TextStyle(color: AppPalette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: tunnel.status == TunnelStatus.running ||
+                                tunnel.status == TunnelStatus.starting
+                            ? null
+                            : () => unawaited(controller.startTunnel()),
+                        icon: Icon(
+                          tunnel.status == TunnelStatus.running
+                              ? Icons.cloud_done
+                              : Icons.cloud_outlined,
+                        ),
+                        label: Text(
+                          tunnel.status == TunnelStatus.starting
+                              ? 'Starting...'
+                              : (tunnel.status == TunnelStatus.running
+                                  ? 'Tunnel Active'
+                                  : 'Start Tunnel'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    if (tunnel.status == TunnelStatus.running ||
+                        tunnel.status == TunnelStatus.starting)
+                      IconButton.filledTonal(
+                        tooltip: 'Stop tunnel',
+                        onPressed: tunnel.status == TunnelStatus.running
+                            ? () => unawaited(controller.stopTunnel())
+                            : null,
+                        icon: const Icon(Icons.stop_circle_outlined),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Creates a public HTTPS URL via Cloudflare. No account needed — uses trycloudflare.com quick tunnels.',
+                  style: TextStyle(color: AppPalette.muted, fontSize: 11),
                 ),
               ],
             ),
@@ -2370,6 +2663,36 @@ class _StatusDot extends StatelessWidget {
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
+}
+
+class _TunnelDot extends StatelessWidget {
+  const _TunnelDot({required this.status});
+
+  final TunnelStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      TunnelStatus.running => AppPalette.teal,
+      TunnelStatus.starting => AppPalette.amber,
+      TunnelStatus.failed => AppPalette.error,
+      TunnelStatus.stopped => AppPalette.muted,
+    };
+    return Container(
+      height: 12,
+      width: 12,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+String _tunnelStatusLabel(TunnelStatus status) {
+  return switch (status) {
+    TunnelStatus.stopped => 'Tunnel Off',
+    TunnelStatus.starting => 'Connecting...',
+    TunnelStatus.running => 'Tunnel Active',
+    TunnelStatus.failed => 'Tunnel Failed',
+  };
 }
 
 class _InfoRow extends StatelessWidget {
