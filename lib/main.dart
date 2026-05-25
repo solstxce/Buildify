@@ -145,6 +145,7 @@ class DeviceSnapshot {
     required this.freeStorageGb,
     required this.batteryPercent,
     required this.ipAddress,
+    required this.tailscaleIp,
     required this.cpuLabel,
   });
 
@@ -152,6 +153,7 @@ class DeviceSnapshot {
   final double freeStorageGb;
   final int batteryPercent;
   final String ipAddress;
+  final String? tailscaleIp;
   final String cpuLabel;
 
   DeviceSnapshot copyWith({
@@ -159,6 +161,7 @@ class DeviceSnapshot {
     double? freeStorageGb,
     int? batteryPercent,
     String? ipAddress,
+    String? tailscaleIp,
     String? cpuLabel,
   }) {
     return DeviceSnapshot(
@@ -166,6 +169,7 @@ class DeviceSnapshot {
       freeStorageGb: freeStorageGb ?? this.freeStorageGb,
       batteryPercent: batteryPercent ?? this.batteryPercent,
       ipAddress: ipAddress ?? this.ipAddress,
+      tailscaleIp: tailscaleIp ?? this.tailscaleIp,
       cpuLabel: cpuLabel ?? this.cpuLabel,
     );
   }
@@ -349,6 +353,7 @@ class AiServerController extends StateNotifier<AiServerState> {
             freeStorageGb: 43.6,
             batteryPercent: 72,
             ipAddress: '192.168.0.121',
+            tailscaleIp: null,
             cpuLabel: '8-core ARM',
           ),
           selectedModelId: '',
@@ -480,6 +485,7 @@ class AiServerController extends StateNotifier<AiServerState> {
 
   Future<void> _hydrateNativeState() async {
     final ip = await _native.getLocalIp();
+    final tailscaleIp = await _native.getTailscaleIp();
     final base = await _native.getModelBasePath();
     if (base != null && base.isNotEmpty) {
       _modelBasePath = base;
@@ -489,15 +495,28 @@ class AiServerController extends StateNotifier<AiServerState> {
       state = state.copyWith(
         port: status.port,
         status: _statusFromNative(status.status),
-        device: state.device.copyWith(ipAddress: ip ?? state.device.ipAddress),
+        device: state.device.copyWith(
+          ipAddress: ip ?? state.device.ipAddress,
+          tailscaleIp: tailscaleIp,
+        ),
       );
       _appendLog(
         'native bridge ready: ${status.status} on ${state.device.ipAddress}:${status.port}',
         LogType.system,
       );
+      if (tailscaleIp != null) {
+        _appendLog('tailscale detected: $tailscaleIp', LogType.system);
+      }
       if (status.lastError != null && status.lastError!.isNotEmpty) {
         _appendLog('native: ${status.lastError}', LogType.warning);
       }
+    } else {
+      state = state.copyWith(
+        device: state.device.copyWith(
+          ipAddress: ip ?? state.device.ipAddress,
+          tailscaleIp: tailscaleIp,
+        ),
+      );
     }
     await _scanExistingModels();
   }
@@ -1282,6 +1301,14 @@ class NativeServerBridge {
     }
   }
 
+  Future<String?> getTailscaleIp() async {
+    try {
+      return await _channel.invokeMethod<String>('getTailscaleIp');
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<NativeTunnelResponse> startTunnel({
     required int port,
     String? tunnelUrl,
@@ -1975,6 +2002,89 @@ class NetworkScreen extends ConsumerWidget {
                   'Creates a public HTTPS URL via Cloudflare. No account needed — uses trycloudflare.com quick tunnels.',
                   style: TextStyle(color: AppPalette.muted, fontSize: 11),
                 ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const _SectionTitle('Tailscale VPN'),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (state.device.tailscaleIp != null) ...[
+                  Row(
+                    children: [
+                      Icon(Icons.check_circle, color: AppPalette.teal, size: 18),
+                      const SizedBox(width: 8),
+                      const Text('Tailscale connected', style: TextStyle(fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _InfoRow(label: 'Tailscale IP', value: state.device.tailscaleIp!),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppPalette.border),
+                    ),
+                    child: SelectableText(
+                      'http://${state.device.tailscaleIp}:${state.port}',
+                      style: const TextStyle(
+                        color: AppPalette.blue,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: () {
+                      final url = 'http://${state.device.tailscaleIp}:${state.port}';
+                      unawaited(Clipboard.setData(ClipboardData(text: url)));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Tailscale URL copied')),
+                      );
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy Tailscale URL'),
+                  ),
+                ] else ...[
+                  Row(
+                    children: [
+                      const Icon(Icons.vpn_lock, color: AppPalette.muted, size: 18),
+                      const SizedBox(width: 8),
+                      const Text('Not connected', style: TextStyle(fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Tailscale gives each device a private 100.x.x.x IP so devices on your tailnet '
+                    'can reach the AI server without exposing it publicly.',
+                    style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'How to set up:',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '1. Install Tailscale from Play Store\n'
+                    '2. Sign up / log in\n'
+                    '3. Tap the toggle to connect\n'
+                    '4. Come back here — your Tailscale IP will appear automatically\n'
+                    '5. On your laptop, install Tailscale and log in with the same account\n'
+                    '6. Use the Tailscale URL above from your laptop',
+                    style: TextStyle(color: AppPalette.muted, fontSize: 11, height: 1.5),
+                  ),
+                ],
               ],
             ),
           ),

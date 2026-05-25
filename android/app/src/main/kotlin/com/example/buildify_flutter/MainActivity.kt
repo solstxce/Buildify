@@ -80,6 +80,10 @@ class MainActivity : FlutterActivity() {
                         result.success(getLocalIpAddress())
                     }
 
+                    "getTailscaleIp" -> {
+                        result.success(getTailscaleIpAddress())
+                    }
+
                     "startTunnel" -> {
                         val port = call.argument<Int>("port") ?: 8080
                         val tunnelUrl = call.argument<String>("tunnelUrl")
@@ -121,7 +125,10 @@ class MainActivity : FlutterActivity() {
         NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { intf ->
             intf.inetAddresses.toList().forEach { address ->
                 if (!address.isLoopbackAddress && address is Inet4Address) {
-                    return address.hostAddress ?: "0.0.0.0"
+                    val name = intf.name.lowercase()
+                    if (name != "tailscale0" && name != "wg0") {
+                        return address.hostAddress ?: "0.0.0.0"
+                    }
                 }
             }
         }
@@ -129,5 +136,30 @@ class MainActivity : FlutterActivity() {
         val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
         val ip = wifi?.connectionInfo?.ipAddress ?: 0
         return if (ip != 0) Formatter.formatIpAddress(ip) else "0.0.0.0"
+    }
+
+    private fun getTailscaleIpAddress(): String? {
+        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { intf ->
+            val name = intf.name.lowercase()
+            if (name == "tailscale0" || name == "wg0" || name.startsWith("ts") && name.length <= 5) {
+                intf.inetAddresses.toList().forEach { address ->
+                    if (!address.isLoopbackAddress && address is Inet4Address) {
+                        return address.hostAddress
+                    }
+                }
+            }
+        }
+        // Fallback: look for any 100.x.x.x address (Tailscale CGNAT range)
+        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { intf ->
+            intf.inetAddresses.toList().forEach { address ->
+                if (!address.isLoopbackAddress && address is Inet4Address) {
+                    val ip = address.hostAddress ?: return@forEach
+                    if (ip.startsWith("100.")) {
+                        return ip
+                    }
+                }
+            }
+        }
+        return null
     }
 }

@@ -1,6 +1,6 @@
 # Architecture
 
-Buildify turns an Android phone into a **small HTTP server** that runs a **GGUF** model locally. Other devices on the same Wi‑Fi call it like a mini "Ollama on a phone." An optional **Cloudflare Tunnel** exposes the server to the internet via a public HTTPS URL.
+Buildify turns an Android phone into a **small HTTP server** that runs a **GGUF** model locally. Other devices on the same Wi‑Fi call it like a mini "Ollama on a phone." An optional **Cloudflare Tunnel** exposes the server to the internet via a public HTTPS URL. **Tailscale** provides a private mesh VPN so tailnet devices can reach the server.
 
 ## High-level flow
 
@@ -12,7 +12,7 @@ Buildify turns an Android phone into a **small HTTP server** that runs a **GGUF*
 └───────────────────────────┬─────────────────────────────────┘
                             │ MethodChannel: buildify.ai/server
                             │  startServer / stopServer / getServerStatus
-                            │  getLocalIp / getModelBasePath
+                            │  getLocalIp / getTailscaleIp / getModelBasePath
                             │  startTunnel / stopTunnel / getTunnelStatus
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ Buildify turns an Android phone into a **small HTTP server** that runs a **GGUF*
 
 | Area | Location |
 |------|----------|
-| UI + download + channel bridge | `lib/main.dart` |
+| UI + download + channel bridge + Tailscale detection | `lib/main.dart` |
 | Model catalog (JSON) | `assets/models/catalog.json` |
 | MethodChannel handlers | `android/.../MainActivity.kt` |
 | LLM foreground service | `android/.../AiServerService.kt` |
